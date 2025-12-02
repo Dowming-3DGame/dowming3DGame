@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<title>3D 扇形揮劍遊戲（相對鏡頭前方移動）</title>
+<style>
+  body { margin:0; overflow:hidden; }
+  canvas { display:block; }
+  #info { position:absolute; top:10px; left:10px; color:white; font-size:18px; font-family:sans-serif; }
+  #gameover { position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); color:red; font-size:48px; font-family:sans-serif; display:none; }
+</style>
+</head>
+<body>
+<div id="info">生命值: 3 | 分數: 0</div>
+<div id="gameover">GAME OVER</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+// === 場景、相機、渲染器 ===
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+const renderer = new THREE.WebGLRenderer();
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// === 控制器 ===
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enablePan = false;
+controls.maxPolarAngle = Math.PI/2;
+controls.minDistance = 5;
+controls.maxDistance = 20;
+
+// === 地板 ===
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(100,100), new THREE.MeshBasicMaterial({color:0x999999, wireframe:true}));
+floor.rotation.x = -Math.PI/2;
+scene.add(floor);
+
+// === 玩家 ===
+const player = new THREE.Mesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshBasicMaterial({color:0x00ff00}));
+player.position.y = 0.5;
+scene.add(player);
+
+// === 玩家狀態 ===
+let playerHP = 3, score = 0;
+const info = document.getElementById('info');
+const gameoverDiv = document.getElementById('gameover');
+
+// === 玩家揮劍狀態 ===
+let swordCooldown = 0, swordActive = false, swordTimer = 0;
+const swordTimerMax = 10;
+
+// === 敵人 ===
+const enemies = [];
+function spawnEnemy(x,z){
+  const enemy = new THREE.Mesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshBasicMaterial({color:0xff0000}));
+  enemy.position.set(x,0.5,z);
+  enemy.cooldown = Math.floor(Math.random()*50)+50;
+  enemy.active = false;
+  enemy.timer = 0;
+  scene.add(enemy);
+  enemies.push(enemy);
+}
+spawnEnemy(5,0);
+spawnEnemy(-5,-5);
+spawnEnemy(0,5);
+
+// === 控制鍵盤 ===
+let keys = {};
+document.addEventListener('keydown', e=>keys[e.key]=true);
+document.addEventListener('keyup', e=>keys[e.key]=false);
+document.addEventListener('keydown', e=>{
+  if(e.key===' ' && swordCooldown<=0){
+    swordActive = true;
+    swordCooldown = 30;
+    swordTimer = swordTimerMax;
+  }
+});
+
+// === 揮劍特效材質 ===
+const swordEffectMat = new THREE.MeshBasicMaterial({color:0xffff00, transparent:true, opacity:0.6, side:THREE.DoubleSide});
+
+// === 遊戲迴圈 ===
+let gameOver = false;
+function animate(){
+  if(gameOver) return;
+  requestAnimationFrame(animate);
+
+  // 角色移動方向相對鏡頭
+  let camForward = new THREE.Vector3();
+  camera.getWorldDirection(camForward);
+  camForward.y = 0; camForward.normalize();
+  let camRight = new THREE.Vector3();
+  camRight.crossVectors(camForward,new THREE.Vector3(0,1,0)).normalize();
+
+  let moveDir = new THREE.Vector3();
+  if(keys['w']) moveDir.add(camForward);
+  if(keys['s']) moveDir.sub(camForward);
+  if(keys['a']) moveDir.sub(camRight);
+  if(keys['d']) moveDir.add(camRight);
+  if(moveDir.length()>0){
+    moveDir.normalize();
+    player.position.add(moveDir.multiplyScalar(0.1));
+    player.rotation.y = Math.atan2(moveDir.x, moveDir.z);
+  }
+
+  // 玩家扇形揮劍
+  if(swordActive){
+    swordTimer--;
+    const swordLength = 1.5;
+    const swordAngle = Math.PI/3; // 120°扇形
+    // 特效
+    const effectGeo = new THREE.CylinderGeometry(swordLength, swordLength, 0.1, 32, 1, true, -swordAngle, swordAngle*2);
+    const effectMesh = new THREE.Mesh(effectGeo, swordEffectMat.clone());
+    effectMesh.rotation.x = -Math.PI/2;
+    effectMesh.position.set(player.position.x, player.position.y, player.position.z);
+    effectMesh.rotation.y = player.rotation.y;
+    scene.add(effectMesh);
+    setTimeout(()=>{scene.remove(effectMesh)},100);
+
+    // 扇形碰撞判定
+    for(let i=enemies.length-1;i>=0;i--){
+      const e = enemies[i];
+      const dir = new THREE.Vector3().subVectors(e.position, player.position);
+      const dist = dir.length();
+      if(dist > swordLength) continue;
+      dir.normalize();
+      const forward = new THREE.Vector3(Math.sin(player.rotation.y),0,Math.cos(player.rotation.y));
+      const angle = forward.angleTo(dir);
+      if(angle <= swordAngle){
+        scene.remove(e);
+        enemies.splice(i,1);
+        score++;
+      }
+    }
+
+    if(swordTimer<=0) swordActive=false;
+  }
+  if(swordCooldown>0) swordCooldown--;
+
+  // 敵人行為
+  enemies.forEach(e=>{
+    const dir = new THREE.Vector3().subVectors(player.position,e.position).normalize();
+    e.position.add(dir.multiplyScalar(0.02));
+    e.rotation.y = Math.atan2(dir.x, dir.z);
+
+    if(e.cooldown<=0){
+      e.active = true;
+      e.timer = 10;
+      e.cooldown = 60+Math.floor(Math.random()*60);
+    } else e.cooldown--;
+
+    if(e.active){
+      const swordLength = 1.5, swordAngle=Math.PI/3;
+      // 特效
+      const effectGeo = new THREE.CylinderGeometry(swordLength, swordLength, 0.1, 32, 1, true, -swordAngle, swordAngle*2);
+      const effectMesh = new THREE.Mesh(effectGeo, swordEffectMat.clone());
+      effectMesh.rotation.x = -Math.PI/2;
+      effectMesh.position.set(e.position.x,e.position.y,e.position.z);
+      effectMesh.rotation.y = e.rotation.y;
+      scene.add(effectMesh);
+      setTimeout(()=>{scene.remove(effectMesh)},100);
+
+      // 扇形判定
+      const dirToPlayer = new THREE.Vector3().subVectors(player.position,e.position);
+      const dist = dirToPlayer.length();
+      if(dist <= swordLength){
+        dirToPlayer.normalize();
+        const forward = new THREE.Vector3(Math.sin(e.rotation.y),0,Math.cos(e.rotation.y));
+        const angle = forward.angleTo(dirToPlayer);
+        if(angle <= swordAngle) playerHP--;
+      }
+
+      e.timer--;
+      if(e.timer<=0) e.active=false;
+    }
+  });
+
+  // 更新資訊
+  info.innerText = `生命值: ${playerHP} | 分數: ${score}`;
+  if(playerHP<=0){gameOver=true;gameoverDiv.style.display='block';}
+
+  // 鏡頭跟隨角色
+  controls.target.copy(player.position);
+  controls.update();
+
+  renderer.render(scene,camera);
+}
+animate();
+
+// === 視窗縮放 ===
+window.addEventListener('resize',()=>{
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth,window.innerHeight);
+});
+</script>
+</body>
+</html>
